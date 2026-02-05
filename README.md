@@ -1,0 +1,1 @@
+# GoDoggity-fitness-planner-core
