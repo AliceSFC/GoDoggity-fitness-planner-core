@@ -301,7 +301,7 @@
             };
 
             try {
-                const response = await fetch('http://localhost:8000/generate-plan', {
+                const response = await fetch('https://godoggity-fitness-planner-core-api.onrender.com/generate-plan', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -354,7 +354,7 @@
                 resultDiv.className = 'error';
                 resultDiv.innerHTML = `
                     <h3 style="color: #dc3545; margin-bottom: 10px;">✗ Verbindingsfout</h3>
-                    <p>Kan geen verbinding maken met de API. Controleer of de server draait op http://localhost:8000</p>
+                    <p>Kan geen verbinding maken met de API. Controleer of de Render service online is.</p>
                     <p style="margin-top: 10px; font-size: 0.9em; color: #666;">Error: ${error.message}</p>
                 `;
             } finally {
