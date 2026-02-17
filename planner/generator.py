@@ -1,5 +1,11 @@
 import pandas as pd
-from .rules import parse_activities
+from .rules import (
+    parse_activities,
+    RULES,
+    BODY_FOCUS_ROTATION,
+    select_exercises_for_day,
+    select_light_exercises,
+)
 
 WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 SPORT_TAGS = {"agility", "competition", "trial", "training"}
@@ -79,8 +85,9 @@ def _build_schedule(
     """Build weekly schedule respecting all placement rules.
 
     Rules enforced:
-    - Rest day after each sport day (heavy -> recovery)
-    - At least 1 rest day per week
+    - RULE-004: Rest/light after sport; no 3+ consecutive training days
+    - RULE-005: At least 1 rest day per week
+    - RULE-007/008: Light day (not full training) after sport
     - No 2 consecutive rest days (use 'light' instead)
     - No 2 consecutive training days when sport is in the week
     - Training count within fitness-level range
@@ -91,13 +98,13 @@ def _build_schedule(
     for d in sport_days:
         schedule[d] = "sport"
 
-    # Step 2: mandatory rest after sport days
+    # Step 2: mandatory light after sport days (RULE-007/008)
     # (if next day is already sport, we accept it — user's fixed schedule)
     for i, d in enumerate(WEEK):
         if schedule[d] == "sport" and i + 1 < len(WEEK):
             next_d = WEEK[i + 1]
             if schedule[next_d] is None:
-                schedule[next_d] = "rest"
+                schedule[next_d] = "light"
 
     # Step 3: place training days in remaining open slots
     open_days = [d for d in WEEK if schedule[d] is None]
@@ -106,6 +113,11 @@ def _build_schedule(
 
     for d in training_days:
         schedule[d] = "training"
+
+    # Step 3b: RULE-004 — max 2 consecutive training days
+    for i in range(len(WEEK) - 2):
+        if all(schedule[WEEK[j]] == "training" for j in range(i, i + 3)):
+            schedule[WEEK[i + 2]] = None  # will become rest in step 4
 
     # Step 4: fill remaining as rest
     for d in WEEK:
@@ -117,22 +129,41 @@ def _build_schedule(
         if schedule[WEEK[i]] == "rest" and schedule[WEEK[i + 1]] == "rest":
             schedule[WEEK[i + 1]] = "light"
 
-    # Step 6: ensure at least 1 full rest day
+    # Step 6: ensure at least 1 full rest day (RULE-005)
     rest_count = sum(1 for v in schedule.values() if v == "rest")
     if rest_count < 1:
-        training_in_sched = [d for d in WEEK if schedule[d] == "training"]
-        for d in reversed(training_in_sched):
-            idx = WEEK.index(d)
-            prev_rest = idx > 0 and schedule[WEEK[idx - 1]] == "rest"
-            next_rest = idx < 6 and schedule[WEEK[idx + 1]] == "rest"
-            if not prev_rest and not next_rest:
+        # Convert last non-sport day to rest
+        for d in reversed(WEEK):
+            if schedule[d] in ("training", "light"):
                 schedule[d] = "rest"
                 break
-        else:
-            if training_in_sched:
-                schedule[training_in_sched[-1]] = "rest"
 
     return schedule
+
+
+def _focus_label(body_focus: set[str]) -> str:
+    """Convert body-focus set to readable label."""
+    labels = {
+        "rear": "rear end",
+        "core": "core",
+        "front": "front end",
+        "flexibility": "flexibility",
+        "full_body": "full body",
+        "body_awareness": "body awareness",
+    }
+    return " + ".join(labels.get(f, f) for f in sorted(body_focus))
+
+
+def _day_rules_rest(schedule: dict[str, str], day_index: int) -> list[str]:
+    """Determine applied rules for a rest day."""
+    rules = ["RULE-005"]
+    # RULE-004: rest forced after 2 consecutive training days
+    if day_index >= 2:
+        prev1 = schedule[WEEK[day_index - 1]]
+        prev2 = schedule[WEEK[day_index - 2]]
+        if prev1 == "training" and prev2 == "training":
+            rules.append("RULE-004")
+    return rules
 
 
 def make_week_plan(
@@ -147,18 +178,13 @@ def make_week_plan(
 
     schedule = _build_schedule(sport_days, training_range, has_sport)
 
-    # Pick exercises (same selection as before)
-    cols = ["exercise_id", "name_en", "focus", "difficulty", "video_url"]
-    existing_cols = [c for c in cols if c in allowed_exercises.columns]
-    picked = (
-        allowed_exercises.head(3)[existing_cols]
-        .fillna("")
-        .to_dict(orient="records")
-    )
-
     plan = []
+    training_day_num = 0
+
     for d in WEEK:
         day_type = schedule[d]
+        day_index = WEEK.index(d)
+
         if day_type == "sport":
             plan.append({
                 "day": d,
@@ -167,27 +193,49 @@ def make_week_plan(
                     f"Planned activity: {', '.join(activities.get(d, []))}."
                     " No extra fitness today."
                 ),
+                "applied_rules": ["RULE-008"],
             })
+
         elif day_type == "training":
+            body_focus = BODY_FOCUS_ROTATION[
+                training_day_num % len(BODY_FOCUS_ROTATION)
+            ]
+            exercises = select_exercises_for_day(
+                allowed_exercises, day_index, body_focus, count=3
+            )
+            training_day_num += 1
             plan.append({
                 "day": d,
                 "type": "training",
-                "focus": "mixed",
+                "focus": _focus_label(body_focus),
                 "warmup": "5 min easy walking + gentle mobility",
-                "exercises": picked,
+                "exercises": exercises,
                 "cooldown": "2–5 min calm walking",
+                "applied_rules": [
+                    "RULE-001", "RULE-009", "RULE-010", "RULE-012",
+                ],
             })
+
         elif day_type == "light":
+            exercises = select_light_exercises(
+                allowed_exercises, day_index, count=4
+            )
             plan.append({
                 "day": d,
-                "type": "light",
-                "note": "Light activity day (easy walk, gentle stretching)",
+                "type": "light_training",
+                "focus": "recovery + flexibility",
+                "warmup": "5 min gentle walking",
+                "exercises": exercises,
+                "cooldown": "2–5 min calm walking",
+                "applied_rules": ["RULE-007", "RULE-008", "RULE-012"],
             })
-        else:
+
+        else:  # rest
             plan.append({
                 "day": d,
                 "type": "rest",
                 "note": "Rest day (walking is OK)",
+                "applied_rules": _day_rules_rest(schedule, day_index),
             })
 
     return plan
