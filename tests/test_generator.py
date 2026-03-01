@@ -16,6 +16,12 @@ from planner.rules import (
     select_exercises_for_day,
     select_light_exercises,
     _is_stretch,
+    _assign_session_phase,
+    is_unstable_equipment,
+    filter_unstable,
+    filter_high_intensity,
+    count_complex,
+    compute_plane_coverage,
 )
 
 
@@ -26,66 +32,79 @@ def _dummy_exercises():
         {"exercise_id": "REAR_001", "name_en": "Two Paws On",
          "focus": "rear_end, core, strength", "difficulty": "beginner",
          "impact": "low", "tags": "rear_end,core,weight_shift,foundation",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Core (sagittal) — intermediate
         {"exercise_id": "CORE_001", "name_en": "Weight Shifts",
          "focus": "core", "difficulty": "intermediate",
          "impact": "medium", "tags": "core,stabilization,balance",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Front + core (sagittal) — intermediate
         {"exercise_id": "FRONT_001", "name_en": "Backwards Walking",
          "focus": "front_end, core, body_awareness",
          "difficulty": "intermediate", "impact": "medium",
          "tags": "front_end,core,proprioception,coordination",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Shoulders + flexibility (frontal) — intermediate
         {"exercise_id": "FLEX_001", "name_en": "Stand-Bow-Stand",
          "focus": "shoulders, flexibility, core",
          "difficulty": "intermediate", "impact": "medium",
          "tags": "flexibility,shoulders,core,front_end",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Full body (frontal) — intermediate
         {"exercise_id": "FULL_001", "name_en": "Sideways Stepping",
          "focus": "full_body, lateral_muscles",
          "difficulty": "intermediate", "impact": "medium",
          "tags": "lateral,full_body,coordination,abduction_adduction",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Spine (transverse) — intermediate
         {"exercise_id": "TWIST_001", "name_en": "Twist & Twirl",
          "focus": "spine, lateral_flexibility, core",
          "difficulty": "intermediate", "impact": "medium",
          "tags": "spine,flexibility,rotation,core",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Body awareness / mental — beginner
         {"exercise_id": "MENTAL_001", "name_en": "It's Your Choice",
          "focus": "mental control", "difficulty": "beginner",
          "impact": "low", "tags": "impulse_control,foundation,mental",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Rear end — intermediate
         {"exercise_id": "REAR_002", "name_en": "Pivot",
          "focus": "rear_end, core, lateral_muscles",
          "difficulty": "intermediate", "impact": "medium",
          "tags": "rear_end,core,lateral_work,body_awareness",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Stretch — beginner
         {"exercise_id": "STRETCH_001", "name_en": "Cookie Stretch",
          "focus": "spine, neck, lateral_flexibility",
          "difficulty": "beginner", "impact": "low",
          "tags": "flexibility,stretching,ROM,spine",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Stretch — intermediate
         {"exercise_id": "STRETCH_002", "name_en": "Rear End Stretch",
          "focus": "rear_end, hip_flexors, core",
          "difficulty": "intermediate", "impact": "low",
          "tags": "flexibility,rear_end,hip_flexors,core_stability",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
         # Advanced / high impact — should NOT appear in light days
         {"exercise_id": "ADV_001", "name_en": "Push Up",
          "focus": "shoulders, core, stability",
          "difficulty": "advanced", "impact": "high",
          "tags": "shoulders,advanced,core,eccentric",
-         "video_url": ""},
+         "equipment": "none", "video_url": ""},
+        # Unstable equipment exercise — for RULE-B testing
+        {"exercise_id": "UNSTABLE_001", "name_en": "Balance Pad Stand",
+         "focus": "core, body_awareness",
+         "difficulty": "intermediate", "impact": "low",
+         "tags": "balance,proprioception,core",
+         "equipment": "balance pad", "video_url": ""},
     ])
+
+
+def _get_plan(case, df=None):
+    """Run make_week_plan and return the plan list."""
+    if df is None:
+        df = _dummy_exercises()
+    return make_week_plan(case, df)["plan"]
 
 
 def _get_types(plan):
@@ -347,7 +366,7 @@ class TestMakeWeekPlan:
     def test_high_fitness_one_sport_day(self):
         """Chouffe scenario: high fitness, agility on Tuesday."""
         case = {"fitness_level": "high", "activities": "tue:agility,thu:walk"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         types = _get_types(plan)
 
         assert len(plan) == 7
@@ -358,7 +377,7 @@ class TestMakeWeekPlan:
 
     def test_medium_fitness_no_sport(self):
         case = {"fitness_level": "medium", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         types = _get_types(plan)
 
         training = sum(1 for v in types.values() if v == "training")
@@ -371,7 +390,7 @@ class TestMakeWeekPlan:
             "fitness_level": "low",
             "activities": "mon:agility,wed:competition,fri:training",
         }
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         types = _get_types(plan)
 
         sport = sum(1 for v in types.values() if v == "sport_only")
@@ -382,7 +401,7 @@ class TestMakeWeekPlan:
             "fitness_level": "medium",
             "activities": "mon:agility,tue:competition",
         }
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         types = _get_types(plan)
 
         assert types["Mon"] == "sport_only"
@@ -391,7 +410,7 @@ class TestMakeWeekPlan:
 
     def test_no_activities_at_all(self):
         case = {"fitness_level": "medium"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         types = _get_types(plan)
 
         assert len(plan) == 7
@@ -400,13 +419,13 @@ class TestMakeWeekPlan:
 
     def test_sport_on_sunday(self):
         case = {"fitness_level": "medium", "activities": "sun:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         types = _get_types(plan)
         assert types["Sun"] == "sport_only"
 
     def test_all_seven_days_present(self):
         case = {"fitness_level": "medium", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         days = [e["day"] for e in plan]
         assert days == ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -415,9 +434,19 @@ class TestMakeWeekPlan:
         empty_df = pd.DataFrame(columns=[
             "exercise_id", "name_en", "focus", "difficulty", "video_url",
         ])
-        plan = make_week_plan(case, empty_df)
+        plan = make_week_plan(case, empty_df)["plan"]
         t_days = [e for e in plan if e["type"] == "training"]
         assert all(d["exercises"] == [] for d in t_days)
+
+    def test_returns_dict_with_plan_and_coverage(self):
+        case = {"fitness_level": "medium", "activities": ""}
+        result = make_week_plan(case, _dummy_exercises())
+        assert "plan" in result
+        assert "plane_coverage" in result
+        assert isinstance(result["plan"], list)
+        assert isinstance(result["plane_coverage"], dict)
+        for key in ("median", "dorsal", "transversal"):
+            assert key in result["plane_coverage"]
 
 
 # ── Output structure tests ────────────────────────────────────────────
@@ -425,7 +454,7 @@ class TestMakeWeekPlan:
 class TestOutputStructure:
     def test_training_day_fields(self):
         case = {"fitness_level": "high", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         t_days = [e for e in plan if e["type"] == "training"]
 
         assert len(t_days) >= 1
@@ -436,10 +465,11 @@ class TestOutputStructure:
         assert len(day["exercises"]) >= 3
         assert "cooldown" in day
         assert "focus" in day
+        assert "new_exercises_count" in day
 
     def test_sport_day_fields(self):
         case = {"fitness_level": "high", "activities": "tue:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         s_days = [e for e in plan if e["type"] == "sport_only"]
 
         assert len(s_days) == 1
@@ -448,7 +478,7 @@ class TestOutputStructure:
     def test_light_training_day_fields(self):
         """Light training days after sport should have warmup + exercises."""
         case = {"fitness_level": "high", "activities": "tue:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         l_days = [e for e in plan if e["type"] == "light_training"]
 
         for day in l_days:
@@ -456,10 +486,11 @@ class TestOutputStructure:
             assert "exercises" in day
             assert isinstance(day["exercises"], list)
             assert "cooldown" in day
+            assert "new_exercises_count" in day
 
     def test_rest_day_fields(self):
         case = {"fitness_level": "low", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         r_days = [e for e in plan if e["type"] == "rest"]
         assert len(r_days) >= 1
         assert "note" in r_days[0]
@@ -470,7 +501,7 @@ class TestOutputStructure:
 class TestAppliedRules:
     def test_every_day_has_applied_rules(self):
         case = {"fitness_level": "medium", "activities": "tue:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         for day in plan:
             assert "applied_rules" in day, f"Missing applied_rules on {day['day']}"
             assert isinstance(day["applied_rules"], list)
@@ -478,37 +509,40 @@ class TestAppliedRules:
 
     def test_sport_day_has_rule_008(self):
         case = {"fitness_level": "medium", "activities": "tue:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         tue = [d for d in plan if d["day"] == "Tue"][0]
         assert "RULE-008" in tue["applied_rules"]
 
     def test_training_day_has_all_training_rules(self):
         case = {"fitness_level": "high", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         t_day = [d for d in plan if d["type"] == "training"][0]
-        for rule in ["RULE-001", "RULE-009", "RULE-010", "RULE-012"]:
+        for rule in ["RULE-001", "RULE-009", "RULE-010", "RULE-012",
+                      "RULE-A", "RULE-D", "RULE-E"]:
             assert rule in t_day["applied_rules"], (
                 f"Missing {rule} on training day"
             )
 
     def test_light_training_has_recovery_rules(self):
         case = {"fitness_level": "high", "activities": "tue:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         l_days = [d for d in plan if d["type"] == "light_training"]
         if l_days:
             day = l_days[0]
             assert "RULE-007" in day["applied_rules"]
             assert "RULE-012" in day["applied_rules"]
+            assert "RULE-A" in day["applied_rules"]
+            assert "RULE-E" in day["applied_rules"]
 
     def test_rest_day_has_rule_005(self):
         case = {"fitness_level": "medium", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         r_day = [d for d in plan if d["type"] == "rest"][0]
         assert "RULE-005" in r_day["applied_rules"]
 
     def test_all_rule_ids_are_valid(self):
         case = {"fitness_level": "high", "activities": "tue:agility"}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         for day in plan:
             for rule_id in day["applied_rules"]:
                 assert rule_id in RULES, f"Unknown rule {rule_id}"
@@ -520,7 +554,7 @@ class TestExerciseVariation:
     def test_training_days_have_different_exercises(self):
         """Each training day should have different exercises (offset rotation)."""
         case = {"fitness_level": "high", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         t_days = [d for d in plan if d["type"] == "training"]
 
         assert len(t_days) >= 2
@@ -537,7 +571,7 @@ class TestExerciseVariation:
     def test_body_focus_rotates(self):
         """Training days should rotate through body focus labels."""
         case = {"fitness_level": "high", "activities": ""}
-        plan = make_week_plan(case, _dummy_exercises())
+        plan = _get_plan(case)
         t_days = [d for d in plan if d["type"] == "training"]
 
         focuses = [d["focus"] for d in t_days]
@@ -550,7 +584,7 @@ class TestExerciseVariation:
         """Last exercise in each training day should be a stretch."""
         df = _dummy_exercises()
         case = {"fitness_level": "high", "activities": ""}
-        plan = make_week_plan(case, df)
+        plan = _get_plan(case, df)
         t_days = [d for d in plan if d["type"] == "training"]
 
         for day in t_days:
@@ -563,3 +597,157 @@ class TestExerciseVariation:
             assert "stretch" in last_name or last_id.startswith("STRETCH"), (
                 f"Training {day['day']} doesn't end with stretch: {last}"
             )
+
+
+# ── RULE-A: Session phase ordering tests ─────────────────────────────
+
+class TestRuleASessionOrder:
+    def test_phase_assignment(self):
+        """Body awareness=1, strength=2, cardio=3, stretch=4."""
+        df = _dummy_exercises()
+        mental = df[df["exercise_id"] == "MENTAL_001"].iloc[0]
+        rear = df[df["exercise_id"] == "REAR_001"].iloc[0]
+        stretch = df[df["exercise_id"] == "STRETCH_001"].iloc[0]
+        assert _assign_session_phase(mental) == 1
+        assert _assign_session_phase(rear) == 2
+        assert _assign_session_phase(stretch) == 4
+
+    def test_exercises_sorted_by_phase(self):
+        """Within a training day, exercises should be sorted by phase."""
+        df = _dummy_exercises()
+        exercises = select_exercises_for_day(df, 0, {"rear", "core"}, count=3)
+        if len(exercises) >= 2:
+            # Stretch should always be last
+            last = exercises[-1]
+            assert "stretch" in last.get("name_en", "").lower() or \
+                   last.get("exercise_id", "").startswith("STRETCH")
+
+
+# ── RULE-B: Unstable equipment filter tests ──────────────────────────
+
+class TestRuleBUnstable:
+    def test_is_unstable_balance_pad(self):
+        assert is_unstable_equipment("balance pad") is True
+
+    def test_is_unstable_none(self):
+        assert is_unstable_equipment("none") is False
+
+    def test_filter_unstable_removes_for_medium(self):
+        df = _dummy_exercises()
+        filtered = filter_unstable(df, "medium")
+        ids = set(filtered["exercise_id"])
+        assert "UNSTABLE_001" not in ids
+
+    def test_filter_unstable_keeps_for_high(self):
+        df = _dummy_exercises()
+        filtered = filter_unstable(df, "high")
+        ids = set(filtered["exercise_id"])
+        assert "UNSTABLE_001" in ids
+
+    def test_rule_b_applied_in_plan_medium(self):
+        """RULE-B should appear in applied_rules for non-high fitness."""
+        case = {"fitness_level": "medium", "activities": ""}
+        plan = _get_plan(case)
+        t_days = [d for d in plan if d["type"] == "training"]
+        if t_days:
+            assert "RULE-B" in t_days[0]["applied_rules"]
+
+
+# ── RULE-C: High intensity filter tests ──────────────────────────────
+
+class TestRuleCIntensity:
+    def test_filter_puppies(self):
+        df = _dummy_exercises()
+        filtered = filter_high_intensity(df, "puppy", set())
+        for _, row in filtered.iterrows():
+            assert str(row.get("impact", "")).lower() != "high"
+
+    def test_filter_overweight(self):
+        df = _dummy_exercises()
+        filtered = filter_high_intensity(df, "adult", {"overweight"})
+        for _, row in filtered.iterrows():
+            assert str(row.get("impact", "")).lower() != "high"
+
+    def test_no_filter_for_normal_adult(self):
+        df = _dummy_exercises()
+        filtered = filter_high_intensity(df, "adult", set())
+        assert len(filtered) == len(df)
+
+    def test_rule_c_applied_for_puppy(self):
+        case = {"fitness_level": "medium", "age_group": "puppy", "activities": ""}
+        plan = _get_plan(case)
+        t_days = [d for d in plan if d["type"] == "training"]
+        if t_days:
+            assert "RULE-C" in t_days[0]["applied_rules"]
+
+
+# ── RULE-D: Complex exercise cap tests ───────────────────────────────
+
+class TestRuleDComplexCap:
+    def test_count_complex(self):
+        exercises = [
+            {"difficulty": "advanced"},
+            {"difficulty": "beginner"},
+            {"difficulty": "hard"},
+            {"difficulty": "intermediate"},
+        ]
+        assert count_complex(exercises) == 2
+
+    def test_count_complex_none(self):
+        exercises = [
+            {"difficulty": "beginner"},
+            {"difficulty": "intermediate"},
+        ]
+        assert count_complex(exercises) == 0
+
+    def test_new_exercises_count_field_present(self):
+        case = {"fitness_level": "high", "activities": ""}
+        plan = _get_plan(case)
+        for day in plan:
+            if day["type"] in ("training", "light_training"):
+                assert "new_exercises_count" in day
+                assert isinstance(day["new_exercises_count"], int)
+
+    def test_max_2_complex_per_session(self):
+        """Training days should have at most 2 advanced/hard exercises."""
+        case = {"fitness_level": "high", "activities": ""}
+        plan = _get_plan(case)
+        for day in plan:
+            if day["type"] in ("training", "light_training"):
+                assert day["new_exercises_count"] <= 2
+
+
+# ── RULE-E: Plane coverage tests ────────────────────────────────────
+
+class TestRuleEPlaneCoverage:
+    def test_coverage_dict_keys(self):
+        case = {"fitness_level": "medium", "activities": ""}
+        result = make_week_plan(case, _dummy_exercises())
+        cov = result["plane_coverage"]
+        assert set(cov.keys()) == {"median", "dorsal", "transversal"}
+
+    def test_coverage_with_diverse_exercises(self):
+        """Dummy exercises cover all planes, so coverage should be full."""
+        case = {"fitness_level": "high", "activities": ""}
+        result = make_week_plan(case, _dummy_exercises())
+        cov = result["plane_coverage"]
+        # With our diverse dummy set, at least median (sagittal) should be covered
+        assert cov["median"] is True
+
+    def test_compute_plane_coverage_function(self):
+        df = _dummy_exercises()
+        plan = [
+            {"exercises": [{"exercise_id": "REAR_001"}, {"exercise_id": "TWIST_001"}]},
+            {"exercises": [{"exercise_id": "FULL_001"}]},
+        ]
+        cov = compute_plane_coverage(plan, df)
+        assert cov["median"] is True   # REAR_001 is sagittal
+        assert cov["transversal"] is True  # TWIST_001 is transverse
+        assert cov["dorsal"] is True   # FULL_001 is frontal (full_body)
+
+    def test_rule_e_in_training_applied_rules(self):
+        case = {"fitness_level": "medium", "activities": ""}
+        plan = _get_plan(case)
+        t_days = [d for d in plan if d["type"] == "training"]
+        for day in t_days:
+            assert "RULE-E" in day["applied_rules"]

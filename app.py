@@ -45,9 +45,14 @@ def generate_plan(case_id: str):
     equipment_available = str(row.get("equipment_available", "none"))
 
     allowed = filter_exercises(exercises, limitations, age_group, equipment_available)
-    plan = make_week_plan(row, allowed)
+    result = make_week_plan(row, allowed)
 
-    return {"case_id": case_id, "dog_name": row.get("dog_name"), "plan": plan}
+    return {
+        "case_id": case_id,
+        "dog_name": row.get("dog_name"),
+        "plan": result["plan"],
+        "plane_coverage": result["plane_coverage"],
+    }
 
 @app.post("/generate-plan")
 def generate_plan_post(request: PlanRequest):
@@ -67,10 +72,11 @@ def generate_plan_post(request: PlanRequest):
     equipment_available = str(row.get("equipment_available", "none"))
 
     allowed = filter_exercises(exercises, limitations, age_group, equipment_available)
-    plan = make_week_plan(row, allowed)
+    result = make_week_plan(row, allowed)
 
     return {
         "dog_name": row.get("dog_name"),
         "fitness_level": row.get("fitness_level"),
-        "week_plan": plan
+        "week_plan": result["plan"],
+        "plane_coverage": result["plane_coverage"],
     }

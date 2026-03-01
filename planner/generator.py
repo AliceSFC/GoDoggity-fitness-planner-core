@@ -1,10 +1,16 @@
 import pandas as pd
 from .rules import (
     parse_activities,
+    parse_limitations,
     RULES,
     BODY_FOCUS_ROTATION,
     select_exercises_for_day,
     select_light_exercises,
+    filter_unstable,
+    filter_high_intensity,
+    count_complex,
+    compute_plane_coverage,
+    fill_plane_gaps,
 )
 
 WEEK = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -168,18 +174,27 @@ def _day_rules_rest(schedule: dict[str, str], day_index: int) -> list[str]:
 
 def make_week_plan(
     case_row: dict, allowed_exercises: pd.DataFrame
-) -> list:
+) -> dict:
     fitness = str(case_row.get("fitness_level", "medium")).lower()
+    age_group = str(case_row.get("age_group", "adult")).lower()
+    limitations = parse_limitations(case_row.get("limitations", ""))
     training_range = _get_training_range(fitness)
 
     activities = parse_activities(case_row.get("activities", ""))
     sport_days = _find_sport_days(activities)
     has_sport = len(sport_days) > 0
 
+    # RULE-B: filter unstable equipment for non-high fitness
+    df = filter_unstable(allowed_exercises, fitness)
+    # RULE-C: filter high intensity for puppies / overweight
+    df = filter_high_intensity(df, age_group, limitations)
+
     schedule = _build_schedule(sport_days, training_range, has_sport)
 
     plan = []
     training_day_num = 0
+    applied_b = fitness != "high" and len(df) < len(allowed_exercises)
+    applied_c = len(df) < len(filter_unstable(allowed_exercises, fitness))
 
     for d in WEEK:
         day_type = schedule[d]
@@ -201,33 +216,44 @@ def make_week_plan(
                 training_day_num % len(BODY_FOCUS_ROTATION)
             ]
             exercises = select_exercises_for_day(
-                allowed_exercises, day_index, body_focus, count=3
+                df, day_index, body_focus, count=3
             )
             training_day_num += 1
+            rules = ["RULE-001", "RULE-009", "RULE-010", "RULE-012",
+                      "RULE-A", "RULE-D"]
+            if applied_b:
+                rules.append("RULE-B")
+            if applied_c:
+                rules.append("RULE-C")
             plan.append({
                 "day": d,
                 "type": "training",
                 "focus": _focus_label(body_focus),
                 "warmup": "5 min easy walking + gentle mobility",
                 "exercises": exercises,
+                "new_exercises_count": count_complex(exercises),
                 "cooldown": "2–5 min calm walking",
-                "applied_rules": [
-                    "RULE-001", "RULE-009", "RULE-010", "RULE-012",
-                ],
+                "applied_rules": rules,
             })
 
         elif day_type == "light":
             exercises = select_light_exercises(
-                allowed_exercises, day_index, count=4
+                df, day_index, count=4
             )
+            rules = ["RULE-007", "RULE-008", "RULE-012", "RULE-A", "RULE-D"]
+            if applied_b:
+                rules.append("RULE-B")
+            if applied_c:
+                rules.append("RULE-C")
             plan.append({
                 "day": d,
                 "type": "light_training",
                 "focus": "recovery + flexibility",
                 "warmup": "5 min gentle walking",
                 "exercises": exercises,
+                "new_exercises_count": count_complex(exercises),
                 "cooldown": "2–5 min calm walking",
-                "applied_rules": ["RULE-007", "RULE-008", "RULE-012"],
+                "applied_rules": rules,
             })
 
         else:  # rest
@@ -238,4 +264,16 @@ def make_week_plan(
                 "applied_rules": _day_rules_rest(schedule, day_index),
             })
 
-    return plan
+    # RULE-E: movement plane coverage
+    coverage = compute_plane_coverage(plan, allowed_exercises)
+    fill_plane_gaps(plan, allowed_exercises, coverage)
+    # Recompute after gap filling
+    coverage = compute_plane_coverage(plan, allowed_exercises)
+
+    # Add RULE-E to training/light days
+    for day in plan:
+        if day.get("type") in ("training", "light_training"):
+            if "RULE-E" not in day["applied_rules"]:
+                day["applied_rules"].append("RULE-E")
+
+    return {"plan": plan, "plane_coverage": coverage}

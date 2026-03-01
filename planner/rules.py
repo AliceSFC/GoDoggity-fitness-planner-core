@@ -66,6 +66,11 @@ RULES = {
     "RULE-009": "Full body coverage: front + core + rear per week",
     "RULE-010": "All movement planes: sagittal + frontal + transverse per week",
     "RULE-012": "Warmup mandatory; stretching only after warmup",
+    "RULE-A": "Session order: body awareness → strength → cardio → stretching",
+    "RULE-B": "Unstable equipment only for high fitness level",
+    "RULE-C": "No high-intensity exercises for puppies or overweight dogs",
+    "RULE-D": "Max 2 new/complex exercises per session",
+    "RULE-E": "All 3 movement planes required per week",
 }
 
 
@@ -109,6 +114,15 @@ _BODY_FOCUS_MAP = {
     },
 }
 
+# RULE-B: equipment keywords indicating unstable surfaces
+UNSTABLE_EQUIPMENT = {
+    "balance pad", "balance disc", "wobble board", "bosu", "balance ball",
+}
+
+# RULE-A: session phase keywords
+_PHASE_CARDIO = {"cardio", "conditioning", "gait_training"}
+_PHASE_STRENGTH = {"strength", "power", "dynamic_strength", "eccentric", "plyometric"}
+
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
@@ -134,6 +148,41 @@ def _matches_body_focus(focus_str: str, body_focus: set[str]) -> bool:
         if tokens & keywords:
             return True
     return False
+
+
+def _assign_session_phase(row: pd.Series) -> int:
+    """RULE-A: Assign session phase for ordering.
+
+    1 = body awareness / proprioception
+    2 = strength / power
+    3 = cardio / conditioning
+    4 = stretching / cooldown
+    """
+    focus_tokens = _tokenize(str(row.get("focus", "")))
+    tag_tokens = _tokenize(str(row.get("tags", "")))
+    name = str(row.get("name_en", "")).lower()
+    all_tokens = focus_tokens | tag_tokens
+
+    if "stretching" in all_tokens or "stretch" in name:
+        return 4
+    if all_tokens & _PHASE_CARDIO:
+        return 3
+    if all_tokens & _PHASE_STRENGTH:
+        return 2
+    return 1
+
+
+def _phase_from_dict(ex: dict) -> int:
+    """Lightweight phase classification from exercise dict (no tags)."""
+    name = str(ex.get("name_en", "")).lower()
+    if "stretch" in name:
+        return 4
+    tokens = _tokenize(str(ex.get("focus", "")))
+    if tokens & _PHASE_CARDIO:
+        return 3
+    if tokens & _PHASE_STRENGTH:
+        return 2
+    return 1
 
 
 # ── Classification Functions ────────────────────────────────────────
@@ -172,6 +221,39 @@ def classify_movement_plane(focus_str: str, tags_str: str = "") -> set[str]:
     return planes or {"sagittal"}
 
 
+# ── RULE-B / RULE-C Filters ────────────────────────────────────────
+
+def is_unstable_equipment(equipment_str: str) -> bool:
+    """Check if equipment involves an unstable surface."""
+    eq = str(equipment_str).lower()
+    return any(kw in eq for kw in UNSTABLE_EQUIPMENT)
+
+
+def filter_unstable(df: pd.DataFrame, fitness_level: str) -> pd.DataFrame:
+    """RULE-B: Remove unstable-equipment exercises unless fitness = high."""
+    if fitness_level == "high" or "equipment" not in df.columns:
+        return df
+    mask = ~df["equipment"].apply(is_unstable_equipment)
+    filtered = df[mask]
+    return filtered if not filtered.empty else df
+
+
+def filter_high_intensity(
+    df: pd.DataFrame, age_group: str, limitations: set[str]
+) -> pd.DataFrame:
+    """RULE-C: Remove high-impact exercises for puppies or overweight dogs."""
+    needs_filter = (
+        str(age_group).lower() == "puppy"
+        or "obese" in limitations
+        or "overweight" in limitations
+    )
+    if not needs_filter or "impact" not in df.columns:
+        return df
+    mask = df["impact"].astype(str).str.lower() != "high"
+    filtered = df[mask]
+    return filtered if not filtered.empty else df
+
+
 # ── Exercise Selection ──────────────────────────────────────────────
 
 _OUTPUT_COLS = ["exercise_id", "name_en", "focus", "difficulty", "video_url"]
@@ -187,6 +269,27 @@ def _pick_stretch(exercises: pd.DataFrame, day_index: int) -> pd.DataFrame:
     return stretches.iloc[offset:offset + 1]
 
 
+def _cap_complex(picked: pd.DataFrame, max_new: int = 2) -> pd.DataFrame:
+    """RULE-D: Keep at most *max_new* advanced/hard exercises."""
+    if "difficulty" not in picked.columns:
+        return picked
+    is_complex = picked["difficulty"].astype(str).str.lower().isin(
+        ["advanced", "hard"]
+    )
+    complex_indices = picked[is_complex].index[max_new:]
+    if len(complex_indices) > 0:
+        picked = picked.drop(complex_indices)
+    return picked
+
+
+def count_complex(exercises: list[dict]) -> int:
+    """RULE-D: Count advanced/hard exercises in a session."""
+    return sum(
+        1 for e in exercises
+        if str(e.get("difficulty", "")).lower() in ("advanced", "hard")
+    )
+
+
 def select_exercises_for_day(
     exercises: pd.DataFrame,
     day_index: int,
@@ -195,8 +298,8 @@ def select_exercises_for_day(
 ) -> list[dict]:
     """Select exercises for a training day with body-focus and offset variation.
 
-    Applies: RULE-001 (balanced focus), RULE-009 (body regions), RULE-010 (planes).
-    Returns ``count`` main exercises + 1 stretch at the end (RULE-012).
+    Applies: RULE-001, RULE-009, RULE-010, RULE-A (session order), RULE-D (cap).
+    Returns ``count`` main exercises + 1 stretch at the end.
     """
     cols = [c for c in _OUTPUT_COLS if c in exercises.columns]
     if exercises.empty:
@@ -226,18 +329,25 @@ def select_exercises_for_day(
 
     picked = ordered.head(count)
 
-    # Add stretch at end (RULE-012: stretching after warmup, never first)
+    # Add stretch at end (RULE-012)
     stretch = _pick_stretch(df, day_index)
     if not stretch.empty:
-        # Avoid duplicate
         picked_ids = set(picked["exercise_id"]) if "exercise_id" in picked.columns else set()
         stretch_id = stretch.iloc[0].get("exercise_id", "")
         if stretch_id and stretch_id in picked_ids:
-            # Already included — move it to end
             picked = picked[picked["exercise_id"] != stretch_id]
             picked = pd.concat([picked.head(count), stretch])
         else:
             picked = pd.concat([picked, stretch])
+
+    # RULE-D: cap complex exercises
+    picked = _cap_complex(picked)
+
+    # RULE-A: sort by session phase (awareness → strength → cardio → stretch)
+    picked = picked.copy()
+    picked["_phase"] = picked.apply(_assign_session_phase, axis=1)
+    picked = picked.sort_values("_phase", kind="mergesort")
+    picked = picked.drop(columns=["_phase"])
 
     return picked[cols].fillna("").to_dict(orient="records")
 
@@ -249,9 +359,8 @@ def select_light_exercises(
 ) -> list[dict]:
     """Select light exercises for recovery / post-sport days.
 
-    Applies: RULE-007 (light only), RULE-008 (no intensive after sport).
+    Applies: RULE-007, RULE-008, RULE-A (session order), RULE-D (cap).
     Only beginner/intermediate, prefers low impact & flexibility/body-awareness.
-    Returns ``count`` main exercises + 1 stretch at end.
     """
     cols = [c for c in _OUTPUT_COLS if c in exercises.columns]
     if exercises.empty:
@@ -310,4 +419,87 @@ def select_light_exercises(
         else:
             picked = pd.concat([picked, stretch])
 
+    # RULE-D: cap complex (light days should already exclude advanced)
+    picked = _cap_complex(picked)
+
+    # RULE-A: sort by session phase
+    picked = picked.copy()
+    picked["_phase"] = picked.apply(_assign_session_phase, axis=1)
+    picked = picked.sort_values("_phase", kind="mergesort")
+    picked = picked.drop(columns=["_phase"])
+
     return picked[cols].fillna("").to_dict(orient="records")
+
+
+# ── RULE-E: Movement Plane Coverage ────────────────────────────────
+
+def compute_plane_coverage(
+    plan: list[dict], all_exercises: pd.DataFrame
+) -> dict[str, bool]:
+    """RULE-E: Check which movement planes are covered by the plan."""
+    exercise_ids: set[str] = set()
+    for day in plan:
+        for ex in day.get("exercises", []):
+            eid = ex.get("exercise_id", "")
+            if eid:
+                exercise_ids.add(eid)
+
+    covered: set[str] = set()
+    for _, row in all_exercises.iterrows():
+        if row.get("exercise_id") in exercise_ids:
+            planes = classify_movement_plane(
+                str(row.get("focus", "")),
+                str(row.get("tags", "")),
+            )
+            covered |= planes
+
+    return {
+        "median": "sagittal" in covered,
+        "dorsal": "frontal" in covered,
+        "transversal": "transverse" in covered,
+    }
+
+
+def fill_plane_gaps(
+    plan: list[dict], all_exercises: pd.DataFrame, coverage: dict[str, bool]
+) -> None:
+    """RULE-E: Add exercises for any missing movement planes (modifies plan)."""
+    needed: list[str] = []
+    for label, internal in (("median", "sagittal"), ("dorsal", "frontal"), ("transversal", "transverse")):
+        if not coverage.get(label, False):
+            needed.append(internal)
+
+    if not needed:
+        return
+
+    used_ids: set[str] = set()
+    for day in plan:
+        for ex in day.get("exercises", []):
+            used_ids.add(ex.get("exercise_id", ""))
+
+    cols = [c for c in _OUTPUT_COLS if c in all_exercises.columns]
+
+    for target_plane in needed:
+        for _, row in all_exercises.iterrows():
+            eid = row.get("exercise_id", "")
+            if eid in used_ids:
+                continue
+            planes = classify_movement_plane(
+                str(row.get("focus", "")),
+                str(row.get("tags", "")),
+            )
+            if target_plane not in planes:
+                continue
+
+            ex_dict = {c: str(row.get(c, "") or "") for c in cols}
+            # Add to first training day
+            for day in plan:
+                if day.get("type") in ("training", "light_training"):
+                    day["exercises"].append(ex_dict)
+                    # Re-sort by session phase
+                    day["exercises"] = sorted(
+                        day["exercises"], key=_phase_from_dict
+                    )
+                    used_ids.add(eid)
+                    break
+            break
